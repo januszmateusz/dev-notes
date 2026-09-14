@@ -49,7 +49,3 @@ ruff check --fix ingestion/ airflow/dags/    # napraw automatyczne (głównie ko
 ruff check ingestion/ airflow/dags/          # potwierdź "All checks passed!"
 git diff                                     # zweryfikuj co się zmieniło
 ```
-
-## Kontekst rynkowy (dla pamięci)
-
-ruff w dużej mierze **zastąpił** wcześniejszą kombinację `flake8` + `isort` + częściowo `black` w ekosystemie Pythona — napisany w Rust, znacznie szybszy, obecnie de facto standard. Nauka jednego dobrego lintera (koncepcja: kategorie reguł, auto-fix vs ręczne, świadome wykluczenia z uzasadnieniem, integracja z CI/pre-commit) przenosi się niemal 1:1 na inne narzędzia tego typu (ESLint, RuboCop, nadchodzące SDF dla SQL).
