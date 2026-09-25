@@ -8,3 +8,4 @@ Personal technical cheat sheets — commands, configs, and the reasoning behind 
 - [sqlfluff.md](sqlfluff.md) — SQL linting commands and project config rationale
 - [ruff.md](ruff.md) — Python linting commands and project config rationale
 - [docker.md](docker.md) — Docker commands and concepts
+- [kafka.md](kafka.md) — Kafka commands and core concepts (partitions, offsets, consumer groups)
