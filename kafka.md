@@ -118,3 +118,21 @@ Działa **tylko dla grupy bez zapisanego offsetu**. Grupa z historią zawsze wzn
 ### Spark Structured Streaming + Kafka
 - Spark śledzi przeczytane offsety we **własnym checkpoincie**, a nie w `__consumer_offsets` — ten sam mechanizm co w Auto Loaderze
 - Klucz i wartość przychodzą jako tablice bajtów — deserializację JSON-a robi się w kodzie
+
+### Checkpoint + ujście = dwie pamięci, które muszą być zsynchronizowane
+
+Konsument Structured Streaming ma dwie niezależne pamięci:
+- **checkpoint** — które offsety Kafki przeczytano i pod jakim numerem batcha
+- **dziennik ujścia** — dla Parquet folder `_spark_metadata` w katalogu wyjściowym; które numery batchy zapisano
+
+Usunięcie samego checkpointu je rozsynchronizowuje — numeracja batchy startuje od 0:
+- **Parquet**: ujście uznaje nowe batche za już zapisane i je pomija → **cicha utrata danych**
+  (sprawdzone: 25 wiadomości przepadło, `count()` bez zmian, żadnego ostrzeżenia na poziomie WARN;
+  komunikat `Skipping already committed batch` jest tylko na INFO)
+- **Delta**: idempotencja po identyfikatorze zapytania z checkpointu → nowy checkpoint = nowe zapytanie → **duplikaty**
+
+Zasady:
+- Checkpoint i dane wyjściowe resetuje się razem albo wcale
+- Nigdy nie usuwaj samego checkpointu, żeby przetworzyć dane ponownie
+- Naprawa możliwa tylko w oknie retencji Kafki (Aiven free: 3 dni)
+- Audyt: suma offsetów z `kafka-get-offsets.sh` vs `distinct (partition, offset)` w Bronze
