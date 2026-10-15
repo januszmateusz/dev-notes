@@ -1,8 +1,8 @@
 # uv — ściąga (Windows / PowerShell)
 
 Ściąga z nauki zarządzania środowiskami Pythona. Główne narzędzie: **uv**.
-Zakres: sesje 0–3 (instalacja, fundamenty środowisk, codzienna praca z projektem,
-migracje cudzych repozytoriów, indeks firmowy, eksport).
+Zakres: sesje 0–4 (instalacja, fundamenty środowisk, codzienna praca z projektem,
+migracje cudzych repozytoriów, indeks firmowy, eksport, wheel i Databricks).
 
 ---
 
@@ -558,7 +558,175 @@ uv export --no-dev --no-hashes --no-emit-project -o requirements.txt
 
 ---
 
-## 11. Pułapki z praktyki (szybka diagnoza)
+## 11. Wheel i Databricks
+
+### Gdzie kończy się uv
+
+| Etap | Narzędzie | Co gwarantuje wersje |
+|---|---|---|
+| Rozwój, testy, CI | `uv sync` / `uv run` / `uv lock` | `uv.lock` |
+| Granica | `uv build` (wheel), `uv export` (piny) | metadane wheela / wyeksportowane piny |
+| Databricks | pip (`%pip`, środowisko joba) | nic, czego sam nie przekażesz — resolucja od nowa na preinstalowanych pakietach |
+
+Na Databricks kod jest biblioteką, nawet jeśli to job: lock nie jedzie, deklaracje stają się kontraktem.
+
+### Deklaracje w pakiecie pod Databricks
+
+- **Dolna granica = minimum, którego kod potrzebuje**, NIE wartość z `uv add` (najnowsza wersja z dnia dodania)
+- Zbyt wysoka dolna granica → pip podmienia preinstalowane pakiety (i ich zależności, np. `typing-extensions`)
+- Górnych granic unikaj (blokują aktualizacje platformy); wyjątek: znana niezgodność
+- **pyspark nigdy w `dependencies`** — Databricks dostarcza własną dystrybucję; pyspark z PyPI by ją przesłonił
+- Lokalnie kod sparkowy: `databricks-connect` w osobnej grupie, wersja dopasowana do runtime'u
+  (nie współistnieje z `pyspark` w jednym środowisku)
+- Logikę oddzielaj od Sparka → testowalna bez Sparka; import pyspark wewnątrz funkcji
+- `requires-python` musi pasować do Pythona w środowisku docelowym
+- Usuń placeholder `description` z `uv init` (widoczny w indeksie i na platformie)
+
+### Dowód, że dolna granica jest prawdziwa
+
+```powershell
+uv sync --resolution lowest-direct
+uv tree --frozen --depth 1
+uv run --frozen pytest          # --frozen OBOWIĄZKOWE
+git restore uv.lock
+uv sync
+```
+
+- Lock zapisuje `resolution-mode`; polecenie bez tej samej flagi uzna lock za nieaktualny
+  i po cichu wróci do `highest` (uv: „Ignoring existing lockfile due to change in resolution mode”)
+- `lowest-direct` obniża tylko zależności bezpośrednie; tranzytywne przypięte `==` idą za nimi
+- Starsza wersja = czasem inny zestaw pakietów tranzytywnych, nie tylko inne numery
+
+Test na wersjach z platformy (szybko):
+
+```powershell
+uv pip install "pydantic==2.8.2" "pandas==1.5.3"
+uv run --no-sync pytest         # --no-sync: inaczej uv przywróci lock
+uv sync
+```
+
+### Środowisko Pythona na Databricks
+
+| Mechanizm | Zasięg | Free Edition |
+|---|---|---|
+| Wersja środowiska serverless / Databricks Runtime | Python + preinstalowane pakiety | tak (serverless) |
+| `%pip install` | sesja notebooka | tak |
+| Panel Environment / `environments` w jobie | notebook / zadanie serverless | tak |
+| Biblioteki klastra | klasyczny klaster | nie |
+
+- **„Serverless” to nie jedno środowisko** — `environment_version` decyduje o CAŁYM zestawie pakietów
+  (zaobserwowane: notebook pandas 2.2.3 / pydantic 2.10.6, job env 3: pandas 1.5.3 / pydantic 2.8.2)
+- Wersję środowiska trzymaj w `databricks.yml`; tę samą ustaw w notebooku deweloperskim
+- Testuj na wersjach z JOBA, nie z notebooka
+- `%pip` nie usuwa pakietów platformy (`Not uninstalling ... outside environment`) — instaluje
+  do środowiska notebooka/joba, które przesłania bazowe (warstwy `sys.path`)
+- Po `%pip` w notebooku: `dbutils.library.restartPython()` — inaczej stary moduł zostaje w pamięci
+  (`pydantic.VERSION` ≠ `importlib.metadata.version("pydantic")`)
+- Serverless działa na **aarch64** — zależności binarne muszą mieć wheele `manylinux_*_aarch64`
+- Pakiety idą przez wewnętrzny indeks-proxy — pakiety firmowe wymagają konfiguracji repozytoriów workspace'u
+
+Rozpoznanie środowiska (komórka notebooka / początek joba):
+
+```python
+import sys, importlib.metadata as md
+print(sys.version)
+for p in ["pydantic", "pandas", "pyarrow", "numpy"]:
+    try: print(p, md.version(p))
+    except md.PackageNotFoundError: print(p, "-")
+```
+
+### entry_points.txt
+
+- Plik w `.dist-info` (INI): grupa → `nazwa = moduł:funkcja`; generowany z `[project.scripts]`
+- `console_scripts` → instalator tworzy launcher (`.venv\Scripts\nazwa.exe` / `.venv/bin/nazwa`)
+- Inne grupy = wtyczki odkrywane w runtime (`importlib.metadata.entry_points(group=...)`):
+  pytest (`pytest11`), providery Airflow, dialekty SQLAlchemy
+- Databricks `python_wheel_task`: `entry_point` = nazwa z LEWEJ strony `=`
+- Funkcja wejścia nie dostaje argumentów → parametry przez `sys.argv` → `argparse`
+- Wzorzec testowalny: `def main(argv: list[str] | None = None)` + `parser.parse_args(argv)`
+
+### Ręczne wdrożenie (Volume)
+
+```powershell
+databricks volumes create workspace default wheels MANAGED
+uv build --wheel
+databricks fs cp dist\pakiet-0.1.0-py3-none-any.whl dbfs:/Volumes/workspace/default/wheels/
+```
+
+```python
+%pip install /Volumes/workspace/default/wheels/pakiet-0.1.0-py3-none-any.whl
+```
+
+### Asset Bundle z wheelem budowanym przez uv
+
+```yaml
+artifacts:
+  pakiet:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+resources:
+  jobs:
+    pakiet_job:
+      tasks:
+        - task_key: run_wheel
+          environment_key: default
+          python_wheel_task:
+            package_name: pakiet
+            entry_point: pakiet-cli
+            parameters: ["--fail-on-errors"]
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "3"      # starsze CLI: client: "3"
+            dependencies:
+              - ./dist/*.whl
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      profile: <profil>                   # jawnie — chroni przed wdrożeniem w złe miejsce
+```
+
+```powershell
+Add-Content .gitignore "`n.databricks/"
+Remove-Item dist -Recurse -Force          # ./dist/*.whl łapie WSZYSTKIE wheele
+databricks bundle validate
+databricks bundle deploy                  # buduje wheel (uv build) + wysyła wheel + synchronizuje pliki projektu
+databricks bundle run pakiet_job; $LASTEXITCODE
+databricks bundle destroy
+```
+
+- `Files: N uploaded` = pliki projektu (z pominięciem `.gitignore`), nie zawartość wheela
+- `mode: development` → prefiks `[dev użytkownik]`, katalog użytkownika, wstrzymane harmonogramy;
+  produkcja: `mode: production`, wdrażane z CI (service principal)
+- `bundle run` zwraca kod ≠ 0 przy nieudanym jobie → CI zatrzyma się samo
+
+### Wersjonowanie
+
+```powershell
+uv version --bump patch     # przed KAŻDYM wdrożeniem zmienionego kodu
+```
+
+- pip nie przeinstaluje pakietu w już zainstalowanej wersji
+- Klasyczne klastry: biblioteki instalowane przy starcie — podmiana pliku bez restartu nie działa
+- Indeksy nie pozwalają nadpisać wersji; lock wykrywa inny plik pod tą samą wersją (hash)
+- **Identyfikowalność**: job wypisuje swoją wersję → wiadomo, który kod się wykonał
+
+### Raportowanie błędów w jobach
+
+- `sys.exit(1)` na Databricks → „SystemExit: 1 … use %tb” (entry point działa w środowisku IPython);
+  własny komunikat tylko w run output
+- Lepiej: wyjątek z opisem (`class ValidationFailedError(RuntimeError)`) → treść w błędzie zadania,
+  UI i powiadomieniach; lokalnie też kod wyjścia 1
+- `sys.exit` zostaw dla narzędzi CLI; `INTERNAL_ERROR` = każdy nieobsłużony błąd w zadaniu wheel
+
+---
+
+## 12. Pułapki z praktyki (szybka diagnoza)
 
 | Objaw | Przyczyna | Rozwiązanie |
 |---|---|---|
@@ -580,6 +748,15 @@ uv export --no-dev --no-hashes --no-emit-project -o requirements.txt
 | `uv lock` nie widzi nowej wersji biblioteki | lock preferuje zapisane wersje | `uv lock --upgrade-package <pakiet>` |
 | Platforma bez uv nie znajduje pakietu firmowego | eksport gubi konfigurację indeksów | indeks w konfiguracji pip / platformy |
 | `git diff --exit-code requirements.txt` = 1 w CI | zależności zmienione bez ponownego eksportu | `uv export` tym samym poleceniem + commit |
+| Test `lowest-direct` przechodzi „podejrzanie łatwo” | polecenie bez `--frozen` przywróciło `highest` | `uv run --frozen pytest` |
+| `uv run` lokalnie: `No module named 'pyspark'` | pyspark celowo niezadeklarowany | logika poza Sparkiem; databricks-connect w osobnej grupie |
+| Job na Databricks ma inne wersje niż notebook | inna `environment_version` | ta sama wersja środowiska w bundle i notebooku |
+| `%pip install` podmienia `typing-extensions` i inne | za wysoka dolna granica w wheelu | dolna granica = minimum dla kodu |
+| Po `%pip` stara wersja pakietu w notebooku | moduł w pamięci | `dbutils.library.restartPython()` |
+| Poprawka nie działa po wdrożeniu | ta sama wersja wheela | `uv version --bump patch` |
+| Job instaluje kilka wersji wheela | `./dist/*.whl` łapie stare pliki | wyczyść `dist\` przed deploy |
+| `bundle validate`: `no such host` | DNS / sieć, nie konfiguracja | sieć, `Resolve-DnsName`, `ipconfig /flushdns` |
+| Alert z joba: „SystemExit: 1” bez treści | `sys.exit` w entry poincie | wyjątek z opisowym komunikatem |
 
 ### Narzędzie diagnostyczne
 
