@@ -1,0 +1,31 @@
+bundle:
+  name: <package_name>
+
+artifacts:
+  <package_name>:
+    type: whl
+    build: uv build --wheel
+    path: .
+
+resources:
+  jobs:
+    <package_name>_job:
+      name: <package_name>-demo
+      tasks:
+        - task_key: run_wheel
+          environment_key: default
+          python_wheel_task:
+            package_name: <package_name>
+            entry_point: <package_name>
+            parameters: ["--fail-on-errors"]
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "3"
+            dependencies:
+              - ./dist/*.whl
+
+targets:
+  dev:
+    mode: development
+    default: true
