@@ -106,3 +106,77 @@ node id: plik.py::Klasa::test, --lf / --ff (stan w .pytest_cache → .gitignore)
 - Przed commitem: git diff --stat (wklejenie kodu potrafi nadpisać cały plik).
 - Po przeniesieniu pakietu: uv sync --reinstall-package <pkg>.
 - mypy: jedyny __init__.py w src/<pakiet>/ — dodatkowe __init__.py psują ustalanie nazw modułów.
+
+# pytest — sesja 3: fixtures (podstawy)
+
+## Czym jest fixture
+- Funkcja z @pytest.fixture; test prosi o nią nazwą parametru → pytest wywołuje i wstrzykuje wynik.
+- Nie wywołuj fixture ręcznie. Zależności jawne w sygnaturze, tworzone leniwie (tylko gdy test prosi).
+- Domyślnie scope="function": ciało fixture wykonuje się OD NOWA dla każdego testu → izolacja.
+- Nazwa = rzeczownik opisujący co dostarcza (mixed_flights, airport_db), nie "setup_data".
+- Klasy testowe: fixtures jako argumenty metod po self (zamiast __init__).
+
+## Izolacja danych
+- Dane twórz W CIELE fixture. `return MODUL_LISTA` → wszystkie testy dzielą jeden obiekt
+  → testy zależne od kolejności (pytest-randomly pomaga je wykryć).
+- list(x) = kopia płytka: nowa lista, te same elementy. Mutowalne rekordy (dict) dalej się "przelewają".
+- Rekordy testowe jako @dataclass(frozen=True): niemodyfikowalne, porównywalne przez ==.
+
+## yield: setup i teardown
+- Kod przed yield = setup, po yield = teardown. Typ: -> Iterator[T] (test dostaje T).
+- Teardown wykonuje się po teście zawsze (PASS i FAIL): wyjątek z testu nie trafia do fixture,
+  pytest po prostu wznawia generator → try/finally dla porażek testu NIEpotrzebny.
+- Wyjątek w setupie (przed yield) → E, test się nie uruchamia, kod po yield NIE wykona się
+  → zasób otwarty przed błędem WYCIEKA.
+- Zabezpieczenie: `with` obejmujący także yield:
+    with closing(sqlite3.connect(":memory:")) as conn:
+        ...setup...
+        yield conn
+- Pułapka: `with sqlite3.connect(...)` NIE zamyka połączenia (tylko commit/rollback) → contextlib.closing.
+- --setup-show: SETUP/TEARDOWN F <fixture>; F = scope function (nie "failed").
+  To księgowość pytesta, nie dowód, że Twój kod teardown się wykonał.
+
+## tmp_path
+- Unikalny, pusty katalog (pathlib.Path) na test; izolacja, bezpieczne przy równoległości,
+  brak śmieci w repo, katalogi z ostatnich uruchomień zachowane do diagnozy.
+- tmpdir = legacy (py.path) → używaj tmp_path.
+- Statyczne pliki w repo: Path(__file__).parent / "data" / "x.csv"
+  (NIE Path("tests/data/x.csv") — zależy od cwd).
+
+## conftest.py
+- Fixtures widoczne w katalogu i podkatalogach; nigdy nie importujesz conftest.py.
+- Bliższa definicja (lokalny conftest / plik testowy) przesłania dalszą.
+- Przesłaniaj, gdy zmienia się IMPLEMENTACJA przy tym samym znaczeniu
+  (db_connection: SQLite w unit/, PostgreSQL w integration/).
+- Nowa nazwa, gdy zmienia się ZNACZENIE danych (mixed_flights → all_active_flights).
+- Do conftest.py: fixtures. Zwykłe funkcje pomocnicze → helpers.py.
+- Diagnostyka: --fixtures (lista + docstringi — pisz docstringi!),
+  --fixtures-per-test (która definicja w którym teście), --setup-show.
+
+## Kiedy NIE fixture
+- Mystery guest: dane kluczowe dla testu ukryte poza nim.
+- Inline: dane krótkie, specyficzne dla testu, będące jego sednem (wartości graniczne!).
+- Fixture: dane duże/współdzielone lub zasoby z cyklem życia (pliki, bazy, połączenia).
+- W testach DAMP (czytelność) > DRY. Powtarzalne przypadki → parametrize (sesja 5).
+
+## Testy, które nie testują kodu (powtarzający się błąd!)
+- Pytanie przed każdą asercją: czy ten test może paść, jeśli kod w src/ jest zepsuty?
+- Logika liczona w teście (list comprehension, sum/len) zamiast wywołania funkcji = sygnał,
+  że brakuje funkcji produkcyjnej albo test sprawdza sam siebie.
+- Negatywny test: jeden defekt na test; nazwa, docstring, dane i match muszą mówić to samo.
+
+## mypy przy wielu conftest.py
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
+mypy_path = "src,tests"          # przecinek — bezpieczny też na Windows
+explicit_package_bases = true    # nazwy modułów względem baz → conftest vs integration.conftest
+- Uruchamiaj `uv run mypy` bez argumentów (argumenty zastępują `files`).
+- Parametry tylko do odczytu: Mapping/Sequence/Iterable (dict/list są inwariantne);
+  zwracaj typy konkretne (dict/list).
+
+## Dodatkowe lekcje
+- CSV daje same stringi; wartości słownikowe ("Cancelled" vs "CANCELLED") rozjeżdżają się
+  między komponentami → kontrakt danych z dozwolonymi wartościami na wejściu.
+- Zapytania SQL w testach z placeholderami (?), nie wklejanymi wartościami.
+- Porównuj całe krotki/obiekty: assert row == ("Warsaw",), nie row[0].
