@@ -180,3 +180,77 @@ explicit_package_bases = true    # nazwy modułów względem baz → conftest vs
   między komponentami → kontrakt danych z dozwolonymi wartościami na wejściu.
 - Zapytania SQL w testach z placeholderami (?), nie wklejanymi wartościami.
 - Porównuj całe krotki/obiekty: assert row == ("Warsaw",), nie row[0].
+
+# pytest — sesja 4: fixtures w głąb
+
+## scope = rachunek koszt vs ryzyko
+- function (F, domyślny) | class (C) | module (M) | package (P) | session (S).
+- Szerszy scope tylko gdy: tworzenie KOSZTOWNE i stan NIEMODYFIKOWANY lub resetowany.
+- Tani zasób → function, nawet jeśli szerszy byłby "bezpieczny" (brak zysku, jest ryzyko).
+- Fixture sesyjna tworzona leniwie (pierwszy test, który jej potrzebuje), sprzątana na końcu sesji.
+- Przesłonięta fixture ma własny scope (to osobna definicja).
+- frozen rekordy nie chronią kontenera: list.append w fixture sesyjnej = przeciek.
+  Rozważ tuple[Flight, ...] dla danych tylko do odczytu.
+- ScopeMismatch: szerszy scope nie może zależeć od węższego → tmp_path_factory.mktemp() zamiast tmp_path.
+- Fabryka tworząca pliki na żądanie → function (wspólny katalog = nadpisywanie, problemy przy xdist).
+- Plik referencyjny tylko do odczytu → session.
+
+## Wzorzec: zasób na sesję, izolacja na test
+- session: schemat + dane bazowe (raz).
+- function: połączenie w jawnej transakcji, rollback w teardownie:
+    with closing(sqlite3.connect(path, isolation_level=None)) as conn:
+        conn.execute("BEGIN"); yield conn; conn.rollback()
+- Psuje się gdy: commit() w teście/kodzie, wiele połączeń, DDL z niejawnym commitem (Oracle, MySQL).
+- Alternatywy: unit of work (kod nie commituje, robi to orkiestrator), czyszczenie tabel (DELETE/TRUNCATE),
+  baza-szablon (kopia pliku SQLite na test / CREATE DATABASE ... TEMPLATE), savepointy,
+  osobny schemat/baza na test.
+- Podmiana commit(): sqlite3.Connection nie pozwala na przypisanie metody; i test przestaje
+  sprawdzać, czy kod w ogóle commituje.
+- Baza w tmp_path_factory → każde uruchomienie od czystego stanu (przeciek ograniczony do sesji).
+
+## Fabryki fixtures
+- Fixture zwracająca funkcję: chowa wspólną mechanikę (nagłówek, tmp_path, zapis),
+  dane będące sednem testu zostają inline (przeciwieństwo mystery guest).
+- Fabryka przyjmuje to, co testowany kod CZYTA (czytnik CSV → surowe wiersze tekstu,
+  nie obiekty Flight — inaczej nie da się zapisać złych danych).
+- Parametr podawany jawnie tylko gdy odbiega od domyślnego (jawny = "ten test o tym jest").
+- Typ: Protocol z __call__ (Callable[..., T] nie sprawdza argumentów).
+- Typy/stałe importowane przez testy: osobny moduł (tests/factories.py) —
+  nie conftest.py (nie importujemy), nie helpers.py (kolejność register_assert_rewrite).
+- Lista wierszy: przecinek po każdym elemencie (bez niego Python skleja stringi).
+
+## autouse
+- Tylko infrastruktura/siatki bezpieczeństwa: blokada sieci (pytest-socket), reset stanu globalnego.
+- Nigdy dane: niewidoczna zależność, koszt dla testów bez bazy, zmienia stan początkowy WSZYSTKICH testów.
+- Zamiast: kompozycja — airport_db_with_gdn(airport_db) z nazwą mówiącą, co dodaje.
+- TZ przez monkeypatch nie działa na Windows (brak time.tzset) → kod z jawnymi strefami (UTC).
+
+## Logi: caplog
+- logger = logging.getLogger(__name__); logger.warning("... %d ...", x) (nie f-string, ruff G004).
+- with caplog.at_level(logging.WARNING, logger="flights.loader"): tylko wywołanie; asercje po bloku.
+- Filtruj po record.name (caplog łapie też logi z innych modułów) i levelno.
+- "Dokładnie WARNING" → ==; "brak problemów" → >= logging.WARNING.
+- Podciągi z granicą: "line 3 in", nie "line 3" (dopasuje "line 30").
+- Sprawdzaj liczbę wpisów (len == 1), nie tylko istnienie.
+- caplog.record_tuples gdy znasz dokładną treść; capsys.readouterr() dla print/CLI.
+- Numer linii w logu = to, co zobaczy człowiek w pliku (nagłówek = linia 1).
+
+## PySpark w testach
+- spark: scope session, local[1|2], spark.sql.shuffle.partitions=2, spark.ui.enabled=false,
+  spark.sql.session.timeZone=UTC; konfiguracja przed pierwszym getOrCreate().
+- Izolacja na test: spark.newSession() (osobna konfiguracja SQL i widoki tymczasowe,
+  wspólny SparkContext); unikalne nazwy (uuid), osobna baza na test + DROP ... CASCADE,
+  clearCache() w teardownie.
+- Fixtures z yield → Iterator[T].
+
+## Diagnostyka losowych porażek
+- Różnice CI/lokalnie: kolejność, równoległość (xdist), strefa czasowa, katalog uruchomienia.
+- pytest-randomly (ziarno z CI), zawężanie zbioru poprzedników, --setup-show.
+- Jedno źródło prawdy: lokalnie uruchamiaj komendy dokładnie jak workflow CI (ten sam katalog).
+
+## Lekcje z praktyki
+- Każdy zasób z close() od razu w `with` (closing) — także w fixture sesyjnej.
+- yield tylko gdy jest co sprzątać; inaczej return.
+- path.write_text/path.open zamiast wbudowanego open; write_text na Windows zapisuje CRLF
+  (newline="\n" gdy liczy się zgodność bajtowa, np. golden files).
+- Przed diagnozą błędu w kodzie — sprawdź kod, nie skopiowany output z terminala (zawijanie linii).
