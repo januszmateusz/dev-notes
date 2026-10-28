@@ -254,3 +254,62 @@ explicit_package_bases = true    # nazwy modułów względem baz → conftest vs
 - path.write_text/path.open zamiast wbudowanego open; write_text na Windows zapisuje CRLF
   (newline="\n" gdy liczy się zgodność bajtowa, np. golden files).
 - Przed diagnozą błędu w kodzie — sprawdź kod, nie skopiowany output z terminala (zawijanie linii).
+
+# pytest — sesja 5: parametryzacja
+
+## Podstawy
+- @pytest.mark.parametrize(("a", "expected"), [(1, "x"), (2, "y")]) → osobny test na przypadek.
+- Nazwy parametrów jako krotka (nie "a, expected"); pojedynczy parametr: "a", [1, 2].
+- Krotkę jednoelementową tworzy przecinek: (1,), nie (1).
+- Pętla for w teście = jeden test: pierwsza porażka ukrywa resztę. Parametryzacja = niezależne wyniki.
+- Tabela przypadków czyta się jak specyfikacja: luki (brak pary 14/15) widać gołym okiem.
+- Każda wartość w tabeli ma uzasadnienie (granica / klasa równoważności) albo jej nie ma.
+- Testy jednej funkcji trzymaj razem w pliku (najpierw sukces, potem wyjątki).
+
+## ids
+- Domyślne ID czytelne dla liczb/krótkich stringów; dla list/obiektów → "delays_list0".
+- pytest.param(..., id="boundary_14_on_time_15_late"): ID przy przypadku, mówi DLACZEGO jest w tabeli.
+- Osobna lista ids=[...] może rozjechać się z przypadkami.
+- Jeden przypadek: uv run pytest "plik.py::test[id]" (cudzysłów w PowerShell); -k też dopasowuje ID.
+- Nazwa parametru nie może przesłaniać importu (delays vs delays_list).
+
+## Iloczyn kartezjański
+- Kilka dekoratorów parametrize = wszystkie kombinacje. Sens: niezależne wymiary.
+  Ryzyko: eksplozja liczby testów, kombinacje bez sensu biznesowego.
+
+## Warianty: gdzie parametryzować
+- Parametr testu: dane wejściowe i oczekiwany wynik tego testu.
+- Parametr fabryki (line_ending="\n"): test jawnie decyduje; domyślnie jeden wariant.
+- @pytest.fixture(params=[...]) + request.param: WSZYSTKIE zależne testy (po łańcuchu fixtures)
+  biegną w każdym wariancie — ukryty efekt (42 → 49). Używaj, gdy cała grupa testów ma działać
+  w wariantach (np. SQLite i PostgreSQL). Udokumentuj w docstringu fixture.
+- request.param ma typ Any → jawny typ: rows: list[str] = request.param / str(request.param).
+
+## indirect
+- indirect=True / indirect=["nazwa"]: wartość trafia do fixture (request.param), test dostaje wynik fixture.
+- Lepszy od fabryki: parametr = konfiguracja zasobu (format, wersja schematu);
+  fixture ze scope i cache per parametr (zasób tworzony raz na wariant).
+- Gorszy: proste dane — fabryka czytelniejsza (jawny przepływ, łatwy debug, kilka zasobów w jednym teście).
+
+## xfail
+- pytest.param(..., marks=pytest.mark.xfail(reason=..., strict=True)): znany błąd udokumentowany testem.
+- x = oczekiwana porażka (CI zielone). XPASS bez strict → X, CI zielone, nieaktualny znacznik zostaje.
+- strict=True → XPASS(strict) = FAILED: wymusza usunięcie znacznika po naprawie.
+- xfail_strict = true w konfiguracji → strict dla całego projektu.
+- reason = PRZYCZYNA (+ ID zgłoszenia), nie objaw. Jedna przyczyna → jeden marker w zmiennej.
+
+## Kiedy NIE parametryzować
+- if w ciele sparametryzowanego testu = dwa testy udające jeden. Parametryzuj dane, nie zachowanie.
+- Sukces i wyjątek → osobne testy, każdy z własną tabelą.
+- Tabela z wieloma kolumnami nieczytelna → rozbij test, fabryki, nazwane obiekty.
+
+## Duże tabele z zewnątrz (np. mapowanie od biznesu)
+- Oczekiwania z niezależnego źródła: jeśli produkcja czyta ten sam plik → test tautologiczny.
+- Plik wczytywany do parametrize czytany przy zbieraniu → błąd w pliku = ERROR collecting całej sesji.
+- Path(__file__).parent, id z kodu źródłowego, test unikalności/kompletności specyfikacji,
+  osobny test dla wartości spoza mapowania.
+
+## Normalizacja wartości słownikowych
+- Naprawa w filtrze (.upper()) to łatka: każda funkcja musi powtarzać, nie obsłuży "CNL"/spacji,
+  niespójne wartości płyną dalej. Docelowo: mapowanie na Enum na granicy (parser), nieznane → kwarantanna.
+- Testy zapisują decyzje projektowe: zmiana miejsca walidacji = przeniesienie testów.
