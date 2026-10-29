@@ -313,3 +313,68 @@ explicit_package_bases = true    # nazwy modułów względem baz → conftest vs
 - Naprawa w filtrze (.upper()) to łatka: każda funkcja musi powtarzać, nie obsłuży "CNL"/spacji,
   niespójne wartości płyną dalej. Docelowo: mapowanie na Enum na granicy (parser), nieznane → kwarantanna.
 - Testy zapisują decyzje projektowe: zmiana miejsca walidacji = przeniesienie testów.
+
+# pytest — sesja 6: markery i selekcja
+
+## Mechanizm
+- Marker = metadane testu. Wbudowane (parametrize, xfail, skip...) zmieniają zachowanie;
+  własne to czyste etykiety do selekcji.
+- Przypinanie: dekorator (funkcja/klasa), pytestmark = [...] w module,
+  pytest.param(..., marks=...), hook pytest_collection_modifyitems + item.add_marker().
+- Dekorator i pytestmark zapisują atrybut `pytestmark`; pytest zbiera markery wzdłuż drzewa
+  moduł → klasa → funkcja. Konwencja nazwy: literówka `pytestmarks` = cicha (strict nie pomoże).
+- Marker na fixture nie działa (w nowszych wersjach błąd).
+- Rejestracja ≠ przypinanie: markers = [...] w [tool.pytest.ini_options] tylko deklaruje nazwę.
+  Opis markera = dokumentacja KIEDY go użyć (widoczna w --markers).
+
+## --strict-markers
+- Bez: literówka = nowy marker + ostrzeżenie; test trafia do niewłaściwego joba CI, CI zielone.
+- Z: ERROR collecting, sesja przerwana. Zasada: ciche ostrzeżenia → głośne błędy.
+
+## Selekcja
+- -m "integration", -m "not integration", -m "a and not b"; -k po nazwach (też ID parametrów).
+- -m bez wybranych testów → kod 5 (CI czerwone). Obejście tylko jawne i tymczasowe:
+  `pytest -m integration || [ $? -eq 5 ]` + TODO z warunkiem usunięcia. Lepiej: brak joba, dopóki brak testów.
+- --durations=N / --durations-min=0.5: czasy faz osobno (setup = koszt fixtures,
+  np. fixture sesyjna doliczona do pierwszego testu).
+
+## skip / skipif / importorskip
+- Pominięty test = test, który nie istnieje. Bezwarunkowy skip ≈ zakomentowany test
+  (wycofana funkcja → usuń test).
+- skipif: warunek środowiskowy (OS, brak Dockera); importorskip: brak pakietu;
+  pytest.skip() w fixture: brak zasobu wykryty w setupie (pomija wszystkie zależne testy).
+- Wzorzec REQUIRE_X=1 w CI: brak środowiska → pytest.fail() w fixture → E (setup), nie skip.
+- try/except ImportError łapie tylko brak pakietu; zepsuta Java/środowisko poleci później (getOrCreate).
+- Importy opcjonalnych pakietów: nie na górze modułu (ERROR collecting całej sesji) —
+  w fixture; typy przez `if TYPE_CHECKING:` + `from __future__ import annotations`;
+  mypy: [[tool.mypy.overrides]] module = ["pyspark", "pyspark.*"], ignore_missing_imports = true
+  (zawężone, nie globalnie).
+- Pominięcia się kumulują (normalizacja dewiacji): reason + właściciel + termin, trend skipów w PR,
+  REQUIRE_* w CI, wymagane statusy jobów (branch protection).
+
+## xfail
+- xfail_strict = true w konfiguracji: XPASS = porażka dla wszystkich xfail.
+- xfail(raises=AssertionError): inny wyjątek (np. KeyError) = prawdziwa porażka, nie "znany błąd".
+
+## Unit vs integration
+- Kryterium musi być spójne i mechaniczne. Opcje:
+  "dotyka zasobu" (pliki, bazy) albo "wymaga środowiska / przekracza granicę procesu" (Docker, Spark, sieć).
+- Po katalogu (hook w conftest): nie da się zapomnieć markera, ale katalog musi przestrzegać kryterium.
+- W plikach (pytestmark): jawne, ale łatwo zapomnieć. Mieszane kategorie w pliku → podziel plik.
+- Oznaczaj WYJĄTKI (integration, slow, e2e), unit = negacja → test bez markera nie zostaje sierotą.
+
+## CI
+- Joby: lint (każdy push/PR) → unit (matryca Pythona) i integration (na PR, nie dopiero po merge).
+- Jedno źródło prawdy dla filtrów: INTEGRATION_FILTER, unit = "not (${{ env.INTEGRATION_FILTER }})"
+  → podział pełny i rozłączny z konstrukcji; dodatkowo krok kontrolny (suma z --collect-only = całość).
+- needs: [lint] — tanie sprawdzenie przed testami; unit i integration równolegle.
+- defaults.run.working-directory dla projektu w podkatalogu; bez argumentu `tests` i bez
+  powtarzania opcji z addopts w CI.
+- Zależności tylko do testów → [dependency-groups] (uv sync --group integration), nie extras
+  (extras = opcje dla użytkowników pakietu). Po zmianie: uv lock (inaczej --locked padnie).
+- Gałąź w `on.push.branches` musi zgadzać się z rzeczywistą (master vs main) — inaczej CI cicho nie rusza.
+- permissions: contents: read; akcje przypięte do SHA.
+- Lokalnie: jedno udokumentowane polecenie szybkiego zestawu (np. -m "not integration and not slow" -x),
+  --lf przy poprawkach. Nie wpisuj -m do addopts.
+- Długie CI: najpierw pomiar (--durations, junitxml), potem równoległość (pytest-xdist -n auto),
+  scope fixtures, pytest-split.
