@@ -378,3 +378,67 @@ explicit_package_bases = true    # nazwy modułów względem baz → conftest vs
   --lf przy poprawkach. Nie wpisuj -m do addopts.
 - Długie CI: najpierw pomiar (--durations, junitxml), potem równoległość (pytest-xdist -n auto),
   scope fixtures, pytest-split.
+
+# pytest — sesja 7: izolacja I (monkeypatch, unittest.mock)
+
+## monkeypatch
+- Fixture z automatycznym cofnięciem zmian po teście (także po porażce).
+- setenv(name, "str") / delenv(name, raising=False) / setattr(obj | "modul.attr", value)
+  / setitem / chdir. Wartości env zawsze jako str.
+- Test hermetyczny: wynik zależy tylko od tego, co test przygotował. Test wartości domyślnej
+  MUSI jawnie usunąć zmienną (delenv) — inaczej zależy od maszyny/CI.
+- os.environ["X"] = ... przecieka; ofiarą jest test, który zmiennej nie kontroluje (daleko od przyczyny).
+- monkeypatch przywraca stan SPRZED testu (nie sprząta cudzego bałaganu). Scope function
+  (w sesyjnych: pytest.MonkeyPatch.context()).
+- W testach używaj stałych z kodu (ENV_ON_TIME_THRESHOLD), nie przepisanych stringów.
+- Nazwa "monkey patch": guerrilla → gorilla → monkey; w produkcji hack, w testach kontrolowany.
+
+## Gdzie patchować
+- Patchuj tam, gdzie obiekt jest UŻYWANY:
+  `from flights.alerts import send_alert` w pipeline → patch flights.pipeline.send_alert.
+  `import flights.alerts as alerts; alerts.send_alert()` → patch flights.alerts.send_alert.
+- `from x import f` tworzy NOWĄ nazwę w module importującym; patch zmienia jedną nazwę.
+- Forma setattr(modul_obj, "nazwa", ...) odporna na literówki w ścieżce tekstowej.
+- Siatka bezpieczeństwa (uzasadniony autouse): fixture usuwająca np. FLIGHTS_ALERT_WEBHOOK
+  → błędny patch nie wyśle prawdziwego alertu.
+
+## Czas
+- Typy w C (datetime) — nie da się nadpisać atrybutu (datetime.now) → patch nazwy `datetime`
+  w module używającym (podklasa FakeDatetime) albo lepiej:
+- Wstrzyknięcie: def f(..., now: datetime | None = None). Testowalność = decyzja projektowa.
+  Patch tylko dla kodu legacy/cudzego.
+- Granica dnia (23:30 UTC) testuje konwersję dopiero z wejściem w innej strefie
+  (timezone(timedelta(hours=1)) — bez tzdata; ZoneInfo na Windows wymaga pakietu tzdata).
+- Atrapy upraszczają rzeczywistość — czasem dokładnie w testowanym miejscu (Fake ignoruje tz).
+
+## Mock
+- Mock(return_value=...), side_effect = wyjątek (rzuca) | lista (kolejne wartości, potem StopIteration)
+  | funkcja (wywołuje ją).
+- assert_called() (≥1, bez argumentów) < assert_called_once_with(...) (liczba + treść); assert_not_called().
+- Mock rzucający przez side_effect nadal zapisuje wywołanie.
+- create_autospec(func): sygnatura prawdziwej funkcji → złe wywołanie = TypeError.
+  Domyślnie autospec; goły Mock tylko gdy nie zastępuje konkretnej funkcji/klasy.
+- Mock zapisuje logi? Nie — sprawdzaj logi przez caplog: logger.exception → ERROR + exc_info
+  (krotka typ, wyjątek, traceback); asercja exc_info is not None przed indeksowaniem (mypy).
+- Logi przy porażce: sekcja "Captured log call" w raporcie (nie -s; -s dotyczy print).
+
+## except Exception w produkcji
+- Połyka też błędy programisty (TypeError z błędnego wywołania) → alert nigdy nie wychodzi,
+  wykryte dopiero przy incydencie. Ukrył też próbę prawdziwego wywołania przy błędnym patchu.
+- Zawężaj do awarii operacyjnych: OSError (URLError, HTTPError, TimeoutError, ConnectionError)
+  albo własny wyjątek domenowy (AlertDeliveryError) tłumaczony na granicy: raise ... from exc.
+- Kompromis: co ma przerwać pipeline (konfiguracja? KeyError) — decyzja świadoma, nie przez except Exception.
+
+## Co mockować
+- TAK: granice systemu — sieć, API, czas, losowość, env, operacje nieodwracalne.
+- NIE: własne czyste funkcje (on_time_performance) — testujesz atrapę, wiążesz test z implementacją.
+- Lekkie prawdziwe zamienniki (fakes: tmp_path, SQLite) zwykle lepsze niż mocki.
+- Don't mock what you don't own: opakuj cudzą bibliotekę we własną funkcję i mockuj ją;
+  opakowanie testuj integracyjnie (moto/MinIO dla S3, mock HTTP dla webhooków).
+- Sygnały nadmiernego mockowania: asercja = echo return_value; dane wejściowe bez znaczenia;
+  test sprawdza wywołania zamiast wyniku; pada przy refaktoryzacji bez zmiany zachowania.
+- Wartość oczekiwana z niezależnego źródła (literał, specyfikacja) — nigdy z tej samej funkcji.
+
+## pytest-mock (opcjonalnie)
+- Fixture mocker (mocker.patch, mocker.create_autospec) z automatycznym sprzątaniem;
+  monkeypatch + create_autospec robią to samo bez dodatkowej zależności.
